@@ -3,92 +3,49 @@ const app = express();
 const bodyParser = require("body-parser");
 const sqlDbFactory = require("knex");
 const process = require("process");
+const base64 = require("base-64");
 
-let sqlDb;
-
-function initSqlDB() {
-  /* Locally we should launch the app with TEST=true to use SQLlite:
-
-       > TEST=true node ./index.js
-
-    */
-  if (process.env.TEST) {
-    sqlDb = sqlDbFactory({
-      client: "sqlite3",
-      debug: true,
-      connection: {
-        filename: "./petsdb.sqlite"
-      },
-      useNullAsDefault: true
-    });
-  } else {
-    sqlDb = sqlDbFactory({
-      debug: true,
-      client: "pg",
-      connection: process.env.DATABASE_URL,
-      ssl: true
-    });
-  }
-}
+let sqlDb = sqlDbFactory({
+  debug: true,
+  client: "pg",
+  connection: "postgresql://localhost:5432/zaccaria",
+  ssl: true
+});
 
 function initDb() {
-  return sqlDb.schema.hasTable("pets").then(exists => {
+  return sqlDb.schema.hasTable("blobs").then(exists => {
     if (!exists) {
-      sqlDb.schema
-        .createTable("pets", table => {
-          table.increments();
-          table.string("name");
-          table.integer("born").unsigned();
-          table.enum("tag", ["cat", "dog"]);
-        })
-        .then(() => {
-          return Promise.all(
-            _.map(petsList, p => {
-              delete p.id;
-              return sqlDb("pets").insert(p);
-            })
-          );
-        });
+      console.log("Table does not exist");
+      return sqlDb.schema.createTable("blobs", table => {
+        table.increments();
+        table.binary("data");
+        table.string("description");
+      });
     } else {
       return true;
     }
   });
 }
 
-const _ = require("lodash");
-
 let serverPort = process.env.PORT || 5000;
 
-let petsList = require("./petstoredata.json");
-
-app.use(express.static(__dirname + "/public"));
-
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: "50mb" }));
 app.use(bodyParser.urlencoded({ extended: true }));
 
 // /* Register REST entry point */
-app.get("/pets", function(req, res) {
-  let start = parseInt(_.get(req, "query.start", 0));
-  let limit = parseInt(_.get(req, "query.limit", 5));
-  let sortby = _.get(req, "query.sort", "none");
-  let myQuery = sqlDb("pets");
-
-  if (sortby === "age") {
-    myQuery = myQuery.orderBy("born", "asc");
-  } else if (sortby === "-age") {
-    myQuery = myQuery.orderBy("born", "desc");
-  }
-  myQuery
-    .limit(limit)
-    .offset(start)
+app.get("/blobs/:id", function(req, res) {
+  let idn = parseInt(req.params.id);
+  sqlDb("blobs")
+    .where("id", idn)
     .then(result => {
+      result.data = base64.encode(result.data);
       res.send(JSON.stringify(result));
     });
 });
 
-app.delete("/pets/:id", function(req, res) {
+app.delete("/blobs/:id", function(req, res) {
   let idn = parseInt(req.params.id);
-  sqlDb("pets")
+  sqlDb("blobs")
     .where("id", idn)
     .del()
     .then(() => {
@@ -97,31 +54,23 @@ app.delete("/pets/:id", function(req, res) {
     });
 });
 
-app.post("/pets", function(req, res) {
+app.post("/blobs", function(req, res) {
   let toappend = {
-    name: req.body.name,
-    tag: req.body.tag,
-    born: req.body.born
+    description: req.body.description,
+    data: req.body.data
   };
-  sqlDb("pets")
+  sqlDb("blobs")
     .insert(toappend)
     .then(ids => {
       let id = ids[0];
-      res.send(_.merge({ id, toappend }));
+      res.send({ id, description: toappend.description });
     });
 });
 
-// app.use(function(req, res) {
-//   res.status(400);
-//   res.send({ error: "400", title: "404: File Not Found" });
-// });
-
 app.set("port", serverPort);
 
-initSqlDB();
-initDb();
-
-/* Start the server on port 3000 */
-app.listen(serverPort, function() {
-  console.log(`Your app is ready at port ${serverPort}`);
+initDb().then(() => {
+  app.listen(serverPort, function() {
+    console.log(`Your app is ready at port ${serverPort}`);
+  });
 });
